@@ -28,6 +28,8 @@ PUBLIC API:
     create_effect(pattern, x, y, vx, vy, ...) - Create an effect sprite with velocity/drag/fade
     create_emitter(x, y, chars, spawn_rate, ...) - Create a particle emitter
     create_animation(name, frame_indices, ...) - Create a named animation with offsets
+    Window.set_bloom(enabled, threshold, ...) - Enable bloom post-processing on window
+    Sprite.emissive / EffectSprite.emissive - Mark sprite to always glow (bypasses threshold)
 """
 
 import math
@@ -155,6 +157,13 @@ class Window:
         self._bg = bg if bg is not None else (0, 0, 0, 0)  # Default transparent
         self._sprites: List["Sprite"] = []
         self._emitters: List["EffectSpriteEmitter"] = []
+
+        # Bloom effect settings
+        self._bloom_enabled = False
+        self._bloom_threshold = 200
+        self._bloom_blur_scale = 4
+        self._bloom_intensity = 1.0
+        self._emissive_surface: Optional[pygame.Surface] = None
 
         # Load font and get dimensions
         self._font = _load_font(font_name)
@@ -316,6 +325,62 @@ class Window:
             if sprite.visible:
                 sprite.draw(self)
 
+        # If bloom is enabled, also draw emissive sprites to emissive surface
+        if self._bloom_enabled:
+            emissive_sprites = [s for s in self._sprites
+                                if s.visible and getattr(s, 'emissive', False)]
+            if emissive_sprites:
+                # Create or resize emissive surface as needed
+                if (self._emissive_surface is None or
+                    self._emissive_surface.get_size() != self.surface.get_size()):
+                    self._emissive_surface = pygame.Surface(
+                        self.surface.get_size(), pygame.SRCALPHA
+                    )
+                self._emissive_surface.fill((0, 0, 0, 0))
+
+                # Temporarily swap surface to draw emissive sprites
+                original_surface = self.surface
+                self.surface = self._emissive_surface
+                for sprite in emissive_sprites:
+                    sprite.draw(self)
+                self.surface = original_surface
+            else:
+                # No emissive sprites, clear the surface reference
+                self._emissive_surface = None
+
+    def set_bloom(
+        self,
+        enabled: bool = True,
+        threshold: int = 200,
+        blur_scale: int = 4,
+        intensity: float = 1.0,
+    ) -> None:
+        """
+        Enable or configure bloom effect for this window.
+
+        Bloom creates a soft glow around bright pixels. Sprites marked
+        as emissive will always glow regardless of threshold.
+
+        The effect uses multi-pass blurring at increasing scales (2, 4, 8...)
+        up to blur_scale, creating a rich layered glow. Intensity controls
+        brightness by applying the bloom additively multiple times.
+
+        Args:
+            enabled: Whether bloom is active
+            threshold: Brightness threshold (0-255). Pixels brighter than this glow.
+            blur_scale: Max blur scale (default 4). Higher = bigger glow radius.
+                        Uses multi-pass blur at scales 2, 4, 8... up to this value.
+            intensity: Bloom brightness multiplier (default 1.0). Higher = brighter.
+                       Values > 1.0 apply bloom multiple times additively.
+
+        Example:
+            window.set_bloom(enabled=True, threshold=180, blur_scale=8, intensity=2.0)
+        """
+        self._bloom_enabled = enabled
+        self._bloom_threshold = max(0, min(255, threshold))
+        self._bloom_blur_scale = max(1, blur_scale)
+        self._bloom_intensity = max(0.0, intensity)
+
 
 class SpriteFrame:
     """
@@ -443,6 +508,9 @@ class Sprite:
         self._target_offset_y: float = 0.0
         self._current_offset_x: float = 0.0
         self._current_offset_y: float = 0.0
+
+        # Bloom: if True, always contributes to bloom (bypasses threshold)
+        self.emissive = False
 
     def move_to(self, x: int, y: int) -> None:
         """
@@ -790,6 +858,9 @@ class EffectSprite:
         # Duration: seconds until death (0 = infinite, use fade_time)
         self.duration = 0.0
 
+        # Bloom: if True, always contributes to bloom (bypasses threshold)
+        self.emissive = False
+
     def update(self, dt: float, cell_width: int, cell_height: int) -> None:
         """Update position, velocity, fade, and duration."""
         if not self.alive:
@@ -1037,6 +1108,69 @@ class EffectSpriteEmitter:
         """Move the emitter to a new position."""
         self.x = x
         self.y = y
+
+
+def _apply_bloom(
+    surface: pygame.Surface,
+    threshold: int = 200,
+    blur_scale: int = 4,
+    intensity: float = 1.0,
+    emissive_surface: Optional[pygame.Surface] = None,
+) -> None:
+    """
+    Apply bloom post-processing effect to a surface (in-place).
+
+    Args:
+        surface: The surface to apply bloom to (modified in-place)
+        threshold: Brightness cutoff (0-255)
+        blur_scale: Downscale factor for blur effect (higher = bigger glow)
+        intensity: Bloom brightness multiplier (higher = brighter glow)
+        emissive_surface: Optional surface of emissive-only content (bypasses threshold)
+    """
+    size = surface.get_size()
+    if size[0] < 4 or size[1] < 4:
+        return  # Surface too small for bloom
+
+    # 1. Extract bright pixels via threshold subtraction
+    bright = surface.copy()
+    bright.fill((threshold, threshold, threshold), special_flags=pygame.BLEND_RGB_SUB)
+
+    # 2. Add emissive content (bypasses threshold)
+    if emissive_surface is not None:
+        bright.blit(emissive_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+    # 3. Multi-pass blur at increasing scales for bigger, layered glow
+    # Each pass adds to the bloom, creating a richer effect
+    blurred = pygame.Surface(size, pygame.SRCALPHA)
+    blurred.fill((0, 0, 0, 0))
+
+    # Do passes at scales 2, 4, 8... up to blur_scale
+    scale = 2
+    while scale <= blur_scale and size[0] // scale >= 1 and size[1] // scale >= 1:
+        small_size = (max(1, size[0] // scale), max(1, size[1] // scale))
+        small = pygame.transform.smoothscale(bright, small_size)
+        upscaled = pygame.transform.smoothscale(small, size)
+        blurred.blit(upscaled, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        scale *= 2
+
+    # 4. Apply intensity by blitting multiple times
+    # intensity 1.0 = 1 blit, 2.0 = 2 blits, etc.
+    if intensity <= 0:
+        return
+
+    # Fractional intensity: dim the surface for partial blits
+    full_blits = int(intensity)
+    fractional = intensity - full_blits
+
+    for _ in range(full_blits):
+        surface.blit(blurred, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+    if fractional > 0:
+        # Apply fractional intensity
+        frac_val = int(255 * fractional)
+        frac_surface = blurred.copy()
+        frac_surface.fill((frac_val, frac_val, frac_val), special_flags=pygame.BLEND_RGB_MULT)
+        surface.blit(frac_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
 
 
 def create_sprite(
@@ -1533,6 +1667,17 @@ def run(
         # Draw all sprites in all windows
         for window in _windows.values():
             window.draw_sprites()
+
+        # Apply bloom post-processing to windows that have it enabled
+        for window in _windows.values():
+            if window._bloom_enabled and window.visible:
+                _apply_bloom(
+                    window.surface,
+                    threshold=window._bloom_threshold,
+                    blur_scale=window._bloom_blur_scale,
+                    intensity=window._bloom_intensity,
+                    emissive_surface=window._emissive_surface,
+                )
 
         # Composite all windows in z-order to render surface
         _render_surface.fill((0, 0, 0))
