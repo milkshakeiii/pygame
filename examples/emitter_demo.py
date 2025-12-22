@@ -3,7 +3,7 @@
 Demo of the EffectSpriteEmitter system.
 
 Shows various particle effects created with different emitter configurations.
-Press SPACE to respawn all emitters.
+Press SPACE to spawn more emitters (stacks for performance testing).
 """
 
 import pygame
@@ -131,15 +131,12 @@ def create_all_emitters(root):
 def main():
     root = pyunicodegame.init("Emitter Demo", width=80, height=25, bg=(10, 10, 20, 255))
 
-    emitters = create_all_emitters(root)
+    create_all_emitters(root)
 
     def on_key(key):
-        nonlocal emitters
         if key == pygame.K_SPACE:
-            # Kill existing emitters and respawn
-            for name, emitter in emitters:
-                emitter.kill()
-            emitters = create_all_emitters(root)
+            # Spawn additional emitters (stacks for performance testing)
+            create_all_emitters(root)
         elif key == pygame.K_q:
             pyunicodegame.quit()
 
@@ -158,11 +155,16 @@ def main():
             root.put_string(x - len(label) // 2, y, label, (80, 80, 80))
 
         # Instructions
-        root.put_string(1, 1, "SPACE: respawn emitters   Q: quit", (100, 100, 100))
+        root.put_string(1, 1, "SPACE: add emitters   Q: quit", (100, 100, 100))
+
+        # FPS counter (upper right)
+        fps = pyunicodegame._clock.get_fps()
+        fps_str = f"FPS: {fps:.0f}"
+        root.put_string(80 - len(fps_str) - 1, 1, fps_str, (100, 100, 100))
 
         # Show active emitter and particle count (bottom-middle)
-        active = sum(1 for name, e in emitters if e.alive)
-        status = f"Emitters: {active}/{len(emitters)}  Particles: {len(root._sprites)}"
+        emitter_count = len(root._emitters)
+        status = f"Emitters: {emitter_count}  Particles: {len(root._sprites)}"
         root.put_string(40 - len(status) // 2, 23, status, (80, 80, 80))
 
     pyunicodegame.run(render=render, on_key=on_key)
