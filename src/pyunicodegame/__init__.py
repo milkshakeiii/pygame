@@ -26,11 +26,13 @@ PUBLIC API:
     remove_window(name) - Remove a window
     create_sprite(pattern, fg, bg, char_colors) - Create a sprite from a pattern string
     create_effect(pattern, x, y, vx, vy, ...) - Create an effect sprite with velocity/drag/fade
+    create_emitter(x, y, chars, spawn_rate, ...) - Create a particle emitter
     create_animation(name, frame_indices, ...) - Create a named animation with offsets
 """
 
 import math
 import os
+import random
 from typing import Callable, Dict, List, Optional, Tuple
 
 import pygame
@@ -42,6 +44,7 @@ __all__ = [
     "create_window", "get_window", "remove_window", "Window",
     "Sprite", "SpriteFrame", "create_sprite",
     "EffectSprite", "create_effect",
+    "EffectSpriteEmitter", "create_emitter",
     "Animation", "create_animation",
 ]
 
@@ -151,6 +154,7 @@ class Window:
         self.visible = True
         self._bg = bg if bg is not None else (0, 0, 0, 0)  # Default transparent
         self._sprites: List["Sprite"] = []
+        self._emitters: List["EffectSpriteEmitter"] = []
 
         # Load font and get dimensions
         self._font = _load_font(font_name)
@@ -279,8 +283,26 @@ class Window:
         if sprite in self._sprites:
             self._sprites.remove(sprite)
 
+    def add_emitter(self, emitter: "EffectSpriteEmitter") -> "EffectSpriteEmitter":
+        """Add an emitter to this window. Returns the emitter for chaining."""
+        self._emitters.append(emitter)
+        return emitter
+
+    def remove_emitter(self, emitter: "EffectSpriteEmitter") -> None:
+        """Remove an emitter from this window."""
+        if emitter in self._emitters:
+            self._emitters.remove(emitter)
+
     def update_sprites(self, dt: float) -> None:
-        """Update all sprite positions and remove dead EffectSprites."""
+        """Update all emitters and sprites, remove dead ones."""
+        # Update emitters (may spawn new particles)
+        for emitter in self._emitters:
+            emitter.update(dt, self)
+
+        # Remove dead emitters
+        self._emitters = [e for e in self._emitters if e.alive]
+
+        # Update sprites
         for sprite in self._sprites:
             sprite.update(dt, self._cell_width, self._cell_height)
 
@@ -730,7 +752,8 @@ class EffectSprite:
         vx, vy: Velocity in cells per second
         drag: Velocity decay per second (0.1 = decays to 10% after 1 sec, 1.0 = no drag)
         fade_time: Seconds until fully transparent (0 = no fade)
-        alive: False when fully faded (will be auto-removed from window)
+        duration: Seconds until death (0 = infinite, use fade_time to control lifetime)
+        alive: False when expired (will be auto-removed from window)
     """
 
     def __init__(
@@ -761,13 +784,19 @@ class EffectSprite:
 
         # Fade: seconds until fully transparent (0 = no fade)
         self.fade_time = 0.0
-        self._fade_elapsed = 0.0
+        self._age = 0.0
         self._initial_alpha = 255
 
+        # Duration: seconds until death (0 = infinite, use fade_time)
+        self.duration = 0.0
+
     def update(self, dt: float, cell_width: int, cell_height: int) -> None:
-        """Update position, velocity, and fade."""
+        """Update position, velocity, fade, and duration."""
         if not self.alive:
             return
+
+        # Track age
+        self._age += dt
 
         # Apply velocity
         self.x += self.vx * dt
@@ -779,12 +808,16 @@ class EffectSprite:
             self.vx *= decay
             self.vy *= decay
 
-        # Apply fade
-        if self.fade_time > 0:
-            self._fade_elapsed += dt
-            if self._fade_elapsed >= self.fade_time:
-                self.alive = False
-                self.visible = False
+        # Check duration (hard cutoff, no fade)
+        if self.duration > 0 and self._age >= self.duration:
+            self.alive = False
+            self.visible = False
+            return
+
+        # Check fade (soft cutoff with alpha transition)
+        if self.fade_time > 0 and self._age >= self.fade_time:
+            self.alive = False
+            self.visible = False
 
     def draw(self, window: "Window") -> None:
         """Draw the effect sprite with current alpha."""
@@ -794,7 +827,7 @@ class EffectSprite:
         # Calculate current alpha based on fade progress
         alpha = self._initial_alpha
         if self.fade_time > 0:
-            fade_progress = min(1.0, self._fade_elapsed / self.fade_time)
+            fade_progress = min(1.0, self._age / self.fade_time)
             alpha = int(self._initial_alpha * (1.0 - fade_progress))
 
         frame = self.frames[self.current_frame]
@@ -823,6 +856,187 @@ class EffectSprite:
                         bg = row_colors[col_idx]
 
                 window._put_at_pixel(px, py, char, fg, bg, alpha=alpha)
+
+
+class EffectSpriteEmitter:
+    """
+    Continuously spawns EffectSprites at a configurable rate.
+
+    Emitters are attached to a Window via add_emitter() and automatically
+    update when the window's update_sprites() is called.
+
+    Attributes:
+        x, y: Emitter position in cells
+        active: Whether emitter is spawning new particles
+        alive: False when emitter is done (duration expired)
+    """
+
+    def __init__(
+        self,
+        x: float,
+        y: float,
+        # What to spawn
+        chars: str = "*",
+        colors: Optional[List[Tuple[int, int, int]]] = None,
+        # Spawn rate
+        spawn_rate: float = 10.0,
+        spawn_rate_variance: float = 0.0,
+        # Spawn area
+        spread: Tuple[float, float] = (0.0, 0.0),
+        cell_locked: bool = False,
+        # Velocity
+        speed: float = 5.0,
+        speed_variance: float = 0.0,
+        direction: float = 0.0,
+        arc: float = 360.0,
+        # Particle properties
+        drag: float = 1.0,
+        fade_time: float = 1.0,
+        fade_time_variance: float = 0.0,
+        duration: float = 0.0,
+        duration_variance: float = 0.0,
+        # Emitter lifetime
+        emitter_duration: float = 0.0,
+        max_particles: int = 100,
+    ):
+        """
+        Create an effect sprite emitter.
+
+        Args:
+            x, y: Emitter position in cells
+            chars: Characters to randomly select from for each particle
+            colors: Colors to randomly select from (None = white)
+            spawn_rate: Particles per second
+            spawn_rate_variance: Multiplicative variance (0.2 = ±20%)
+            spread: (x, y) random spread in cells from emitter position
+            cell_locked: If True, snap spawn positions to cell centers
+            speed: Base particle speed in cells/sec
+            speed_variance: Multiplicative variance for speed
+            direction: Emission direction in degrees (0=right, 90=up)
+            arc: Spread angle in degrees (360 = omnidirectional)
+            drag: Particle velocity decay per second
+            fade_time: Particle fade time in seconds
+            fade_time_variance: Multiplicative variance for fade time
+            duration: Particle duration in seconds (0 = use fade_time)
+            duration_variance: Multiplicative variance for duration
+            emitter_duration: How long emitter runs (0 = infinite)
+            max_particles: Maximum concurrent particles from this emitter
+        """
+        self.x = x
+        self.y = y
+        self.chars = chars
+        self.colors = colors if colors else [(255, 255, 255)]
+        self.spawn_rate = spawn_rate
+        self.spawn_rate_variance = spawn_rate_variance
+        self.spread = spread
+        self.cell_locked = cell_locked
+        self.speed = speed
+        self.speed_variance = speed_variance
+        self.direction = direction
+        self.arc = arc
+        self.drag = drag
+        self.fade_time = fade_time
+        self.fade_time_variance = fade_time_variance
+        self.duration = duration
+        self.duration_variance = duration_variance
+        self.emitter_duration = emitter_duration
+        self.max_particles = max_particles
+
+        self.active = True
+        self.alive = True
+        self._age = 0.0
+        self._spawn_accumulator = 0.0
+        self._spawned_particles: List[EffectSprite] = []
+
+    def _apply_variance(self, value: float, variance: float) -> float:
+        """Apply multiplicative variance to a value."""
+        if variance <= 0:
+            return value
+        return value * (1.0 + random.uniform(-variance, variance))
+
+    def update(self, dt: float, window: "Window") -> None:
+        """
+        Update emitter timer and spawn new particles.
+
+        Args:
+            dt: Delta time in seconds
+            window: Window to spawn particles into
+        """
+        if not self.alive:
+            return
+
+        self._age += dt
+
+        # Check emitter duration
+        if self.emitter_duration > 0 and self._age >= self.emitter_duration:
+            self.active = False
+            self.alive = False
+            return
+
+        if not self.active:
+            return
+
+        # Clean up dead particles from our tracking list
+        self._spawned_particles = [p for p in self._spawned_particles if p.alive]
+
+        # Calculate current spawn rate with variance
+        current_rate = self._apply_variance(self.spawn_rate, self.spawn_rate_variance)
+        self._spawn_accumulator += dt * current_rate
+
+        # Spawn particles
+        while self._spawn_accumulator >= 1.0 and len(self._spawned_particles) < self.max_particles:
+            self._spawn_accumulator -= 1.0
+            self._spawn_particle(window)
+
+    def _spawn_particle(self, window: "Window") -> None:
+        """Spawn a single particle with randomized properties."""
+        # Randomize spawn position
+        sx = self.x + random.uniform(-self.spread[0], self.spread[0])
+        sy = self.y + random.uniform(-self.spread[1], self.spread[1])
+        if self.cell_locked:
+            sx = round(sx)
+            sy = round(sy)
+
+        # Randomize velocity (direction + arc)
+        angle = self.direction + random.uniform(-self.arc / 2, self.arc / 2)
+        angle_rad = math.radians(angle)
+        spd = self._apply_variance(self.speed, self.speed_variance)
+        vx = math.cos(angle_rad) * spd
+        vy = -math.sin(angle_rad) * spd  # Negative because y increases downward
+
+        # Randomize properties
+        char = random.choice(self.chars)
+        color = random.choice(self.colors)
+        ft = self._apply_variance(self.fade_time, self.fade_time_variance)
+        dur = self._apply_variance(self.duration, self.duration_variance) if self.duration > 0 else 0.0
+
+        # Create particle
+        effect = EffectSprite([SpriteFrame([[char]])], color)
+        effect.x = sx
+        effect.y = sy
+        effect.vx = vx
+        effect.vy = vy
+        effect.drag = self.drag
+        effect.fade_time = ft
+        effect.duration = dur
+
+        # Add to window and track
+        window.add_sprite(effect)
+        self._spawned_particles.append(effect)
+
+    def stop(self) -> None:
+        """Stop spawning new particles (existing particles continue)."""
+        self.active = False
+
+    def kill(self) -> None:
+        """Stop spawning and mark emitter as dead for removal."""
+        self.active = False
+        self.alive = False
+
+    def move_to(self, x: float, y: float) -> None:
+        """Move the emitter to a new position."""
+        self.x = x
+        self.y = y
 
 
 def create_sprite(
@@ -919,6 +1133,7 @@ def create_effect(
     bg: Optional[Tuple[int, int, int, int]] = None,
     drag: float = 1.0,
     fade_time: float = 0.0,
+    duration: float = 0.0,
     char_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
 ) -> EffectSprite:
     """
@@ -932,6 +1147,7 @@ def create_effect(
         bg: Background color (None = transparent)
         drag: Velocity decay per second (0.1 = decays to 10%/sec, 1.0 = no drag)
         fade_time: Seconds until fully transparent (0 = no fade)
+        duration: Seconds until death (0 = infinite, use fade_time)
         char_colors: Optional per-character color overrides
 
     Returns:
@@ -1003,6 +1219,7 @@ def create_effect(
     effect.vy = vy
     effect.drag = drag
     effect.fade_time = fade_time
+    effect.duration = duration
     return effect
 
 
@@ -1043,6 +1260,79 @@ def create_animation(
         player.play_animation("walk")
     """
     return Animation(name, frame_indices, frame_duration, offsets, loop, offset_speed)
+
+
+def create_emitter(
+    x: float,
+    y: float,
+    chars: str = "*",
+    colors: Optional[List[Tuple[int, int, int]]] = None,
+    spawn_rate: float = 10.0,
+    spawn_rate_variance: float = 0.0,
+    spread: Tuple[float, float] = (0.0, 0.0),
+    cell_locked: bool = False,
+    speed: float = 5.0,
+    speed_variance: float = 0.0,
+    direction: float = 0.0,
+    arc: float = 360.0,
+    drag: float = 1.0,
+    fade_time: float = 1.0,
+    fade_time_variance: float = 0.0,
+    duration: float = 0.0,
+    duration_variance: float = 0.0,
+    emitter_duration: float = 0.0,
+    max_particles: int = 100,
+) -> EffectSpriteEmitter:
+    """
+    Create an effect sprite emitter.
+
+    Args:
+        x, y: Emitter position in cells
+        chars: Characters to randomly select from
+        colors: Colors to randomly select from (None = white)
+        spawn_rate: Particles per second
+        spawn_rate_variance: Multiplicative variance (0.2 = ±20%)
+        spread: (x, y) random spread in cells
+        cell_locked: Snap spawn positions to cell centers
+        speed: Particle speed in cells/sec
+        speed_variance: Multiplicative variance for speed
+        direction: Emission direction in degrees (0=right, 90=up)
+        arc: Spread angle in degrees (360 = omnidirectional)
+        drag: Particle velocity decay per second
+        fade_time: Particle fade time in seconds
+        fade_time_variance: Multiplicative variance for fade time
+        duration: Particle duration (0 = use fade_time)
+        duration_variance: Multiplicative variance for duration
+        emitter_duration: How long emitter runs (0 = infinite)
+        max_particles: Maximum concurrent particles
+
+    Returns:
+        EffectSpriteEmitter ready to add to a window
+
+    Example:
+        # Smoke rising from position (10, 20)
+        smoke = pyunicodegame.create_emitter(
+            x=10, y=20,
+            chars=".oO",
+            colors=[(100, 100, 100), (120, 120, 120)],
+            spawn_rate=5,
+            speed=2, direction=90, arc=30,
+            fade_time=2.0,
+        )
+        window.add_emitter(smoke)
+    """
+    return EffectSpriteEmitter(
+        x=x, y=y,
+        chars=chars, colors=colors,
+        spawn_rate=spawn_rate, spawn_rate_variance=spawn_rate_variance,
+        spread=spread, cell_locked=cell_locked,
+        speed=speed, speed_variance=speed_variance,
+        direction=direction, arc=arc,
+        drag=drag,
+        fade_time=fade_time, fade_time_variance=fade_time_variance,
+        duration=duration, duration_variance=duration_variance,
+        emitter_duration=emitter_duration, max_particles=max_particles,
+    )
 
 
 def init(
