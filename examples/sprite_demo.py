@@ -53,20 +53,15 @@ def main():
         elif key == pygame.K_q:
             pyunicodegame.quit()
 
-    def update(dt):
-        root.update_sprites(dt)
-
     def render():
         # Draw ground
         for x in range(root.width):
             root.put(x, 13, "─", (60, 40, 20))
 
-        root.draw_sprites()
-
         # Instructions
         root.put_string(1, 1, "Arrow keys to move, Q to quit", (100, 100, 100))
 
-    pyunicodegame.run(update=update, render=render, on_key=on_key)
+    pyunicodegame.run(render=render, on_key=on_key)
 
 
 if __name__ == "__main__":

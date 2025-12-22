@@ -55,9 +55,6 @@ def main():
         elif key == pygame.K_q:
             pyunicodegame.quit()
 
-    def update(dt):
-        root.update_sprites(dt)
-
     def render():
         # Draw spawn point indicator
         root.put(spawn_x, spawn_y, '+', (100, 100, 100))
@@ -69,9 +66,7 @@ def main():
         count = len(root._sprites)
         root.put_string(1, 28, f"Particles: {count}", (80, 80, 80))
 
-        root.draw_sprites()
-
-    pyunicodegame.run(update=update, render=render, on_key=on_key)
+    pyunicodegame.run(render=render, on_key=on_key)
 
 
 if __name__ == "__main__":

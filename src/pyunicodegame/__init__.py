@@ -24,6 +24,9 @@ PUBLIC API:
     create_window(name, x, y, width, height, ...) - Create a named window
     get_window(name) - Get a window by name ("root" is auto-created)
     remove_window(name) - Remove a window
+    create_sprite(pattern, fg, bg, char_colors) - Create a sprite from a pattern string
+    create_effect(pattern, x, y, vx, vy, ...) - Create an effect sprite with velocity/drag/fade
+    create_animation(name, frame_indices, ...) - Create a named animation with offsets
 """
 
 import math
@@ -39,6 +42,7 @@ __all__ = [
     "create_window", "get_window", "remove_window", "Window",
     "Sprite", "SpriteFrame", "create_sprite",
     "EffectSprite", "create_effect",
+    "Animation", "create_animation",
 ]
 
 # Font configuration
@@ -319,6 +323,51 @@ class SpriteFrame:
         self.width = len(chars[0]) if chars else 0
 
 
+class Animation:
+    """
+    A named animation sequence with frame indices and per-frame pixel offsets.
+
+    Animations reference frames by index into a sprite's frames list,
+    allowing frame reuse across multiple animations.
+
+    Attributes:
+        name: Unique identifier for this animation
+        frame_indices: List of indices into the sprite's frames list
+        frame_duration: Seconds per frame (controls animation speed)
+        offsets: Per-frame pixel offsets as (offset_x, offset_y) tuples
+        loop: If True, animation repeats; if False, stays on last frame
+        offset_speed: Pixels per second for offset interpolation (0 = instant)
+    """
+
+    def __init__(
+        self,
+        name: str,
+        frame_indices: List[int],
+        frame_duration: float = 0.1,
+        offsets: Optional[List[Tuple[float, float]]] = None,
+        loop: bool = True,
+        offset_speed: float = 0.0,
+    ):
+        """
+        Create an animation.
+
+        Args:
+            name: Unique identifier for this animation
+            frame_indices: List of frame indices into sprite.frames
+            frame_duration: Seconds per frame
+            offsets: Per-frame pixel offsets as (x, y) tuples.
+                     Positive x = right, positive y = down.
+            loop: If True, animation loops; if False, plays once
+            offset_speed: Pixels per second for offset interpolation (0 = instant)
+        """
+        self.name = name
+        self.frame_indices = frame_indices
+        self.frame_duration = frame_duration
+        self.offsets = offsets if offsets else [(0.0, 0.0)] * len(frame_indices)
+        self.loop = loop
+        self.offset_speed = offset_speed
+
+
 class Sprite:
     """
     A unicode sprite - a block of characters that moves as a unit.
@@ -349,8 +398,6 @@ class Sprite:
         self.bg = bg
         self.origin = origin
         self.current_frame = 0
-        self.frame_timer = 0.0
-        self.frame_duration = 0.1  # Seconds per frame (for future animation)
         self.visible = True
 
         # Logical position (changes instantly on move_to)
@@ -362,6 +409,19 @@ class Sprite:
         self._visual_y = 0.0
         self._move_speed = 0.0  # Cells per second (0 = instant)
 
+        # Animation system
+        self._animations: Dict[str, Animation] = {}
+        self._current_animation: Optional[str] = None
+        self._animation_frame_index: int = 0
+        self._animation_timer: float = 0.0
+        self._animation_finished: bool = False
+
+        # Animation offset interpolation in pixels (separate from movement)
+        self._target_offset_x: float = 0.0
+        self._target_offset_y: float = 0.0
+        self._current_offset_x: float = 0.0
+        self._current_offset_y: float = 0.0
+
     def move_to(self, x: int, y: int) -> None:
         """
         Move the sprite to a new logical position.
@@ -372,16 +432,236 @@ class Sprite:
         self.x = x
         self.y = y
 
+    def add_frame(
+        self,
+        pattern: str,
+        char_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
+    ) -> int:
+        """
+        Add an animation frame from a pattern string.
+
+        Args:
+            pattern: Multi-line string defining the frame shape.
+                     Spaces are transparent. Leading/trailing blank lines are trimmed.
+            char_colors: Optional dict mapping characters to foreground colors
+
+        Returns:
+            The index of the newly added frame
+
+        Example:
+            player = pyunicodegame.create_sprite('''
+                O
+               /|\\
+               / \\
+            ''', fg=(0, 255, 0))
+
+            # Add walk frames
+            player.add_frame('''
+                O
+               /|\\
+               /
+            ''')
+            player.add_frame('''
+                O
+               /|\\
+                 \\
+            ''')
+        """
+        # Parse pattern (same logic as create_sprite)
+        lines = pattern.split('\n')
+
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+        if not lines:
+            frame = SpriteFrame([[]])
+            self.frames.append(frame)
+            return len(self.frames) - 1
+
+        min_indent = float('inf')
+        for line in lines:
+            if line.strip():
+                indent = len(line) - len(line.lstrip())
+                min_indent = min(min_indent, indent)
+
+        if min_indent == float('inf'):
+            min_indent = 0
+
+        chars = []
+        fg_colors = [] if char_colors else None
+        max_width = 0
+
+        for line in lines:
+            if len(line) >= min_indent:
+                line = line[int(min_indent):]
+            else:
+                line = ''
+
+            row = list(line)
+            chars.append(row)
+            max_width = max(max_width, len(row))
+
+            if char_colors:
+                color_row = []
+                for c in row:
+                    color_row.append(char_colors.get(c))
+                fg_colors.append(color_row)
+
+        for row in chars:
+            while len(row) < max_width:
+                row.append(' ')
+
+        if fg_colors:
+            for row in fg_colors:
+                while len(row) < max_width:
+                    row.append(None)
+
+        frame = SpriteFrame(chars, fg_colors)
+        self.frames.append(frame)
+        return len(self.frames) - 1
+
+    def add_animation(self, animation: "Animation") -> None:
+        """
+        Register an animation with this sprite.
+
+        Args:
+            animation: Animation object to add
+
+        Example:
+            walk = Animation("walk", [0, 1, 2, 1], frame_duration=0.15,
+                             offsets=[(0, 0), (0, -2), (0, 0), (0, -2)])
+            sprite.add_animation(walk)
+        """
+        self._animations[animation.name] = animation
+
+    def play_animation(self, name: str, reset: bool = True) -> None:
+        """
+        Start playing a named animation.
+
+        Args:
+            name: Name of the animation to play
+            reset: If True, restart from frame 0; if False, continue from current frame
+
+        Raises:
+            KeyError: If no animation with that name exists
+        """
+        if name not in self._animations:
+            raise KeyError(f"No animation named '{name}'")
+
+        if reset or self._current_animation != name:
+            self._animation_frame_index = 0
+            self._animation_timer = 0.0
+            self._animation_finished = False
+
+        self._current_animation = name
+
+        # Set initial frame and offset
+        anim = self._animations[name]
+        self.current_frame = anim.frame_indices[0]
+        self._target_offset_x = anim.offsets[0][0]
+        self._target_offset_y = anim.offsets[0][1]
+
+    def stop_animation(self, reset_offset: bool = True) -> None:
+        """
+        Stop the current animation.
+
+        Args:
+            reset_offset: If True, interpolate offset back to (0, 0)
+        """
+        self._current_animation = None
+        self._animation_finished = False
+        if reset_offset:
+            self._target_offset_x = 0.0
+            self._target_offset_y = 0.0
+
+    def is_animation_playing(self, name: Optional[str] = None) -> bool:
+        """
+        Check if an animation is currently playing.
+
+        Args:
+            name: If specified, check if this specific animation is playing.
+                  If None, check if any animation is playing.
+
+        Returns:
+            True if the animation is playing
+        """
+        if name is None:
+            return self._current_animation is not None and not self._animation_finished
+        return self._current_animation == name and not self._animation_finished
+
+    def is_animation_finished(self) -> bool:
+        """
+        Check if a one-shot animation has completed.
+
+        Returns:
+            True if a non-looping animation has reached its last frame
+        """
+        return self._animation_finished
+
     def update(self, dt: float, cell_width: int, cell_height: int) -> None:
         """
-        Update the sprite's visual position (called by Window.update_sprites).
+        Update the sprite's animation, offsets, and visual position.
 
         Args:
             dt: Delta time in seconds
             cell_width: Width of a cell in pixels
             cell_height: Height of a cell in pixels
         """
-        # Target is logical position in pixels
+        # --- PHASE 1: Animation frame advancement ---
+        if self._current_animation and self._current_animation in self._animations:
+            anim = self._animations[self._current_animation]
+
+            if not self._animation_finished:
+                self._animation_timer += dt
+
+                # Advance frames based on timer
+                while self._animation_timer >= anim.frame_duration:
+                    self._animation_timer -= anim.frame_duration
+                    self._animation_frame_index += 1
+
+                    # Handle end of animation
+                    if self._animation_frame_index >= len(anim.frame_indices):
+                        if anim.loop:
+                            self._animation_frame_index = 0
+                        else:
+                            self._animation_frame_index = len(anim.frame_indices) - 1
+                            self._animation_finished = True
+                            break
+
+                # Update current frame from animation
+                frame_idx = anim.frame_indices[self._animation_frame_index]
+                self.current_frame = frame_idx
+
+                # Update target offset from animation
+                offset = anim.offsets[self._animation_frame_index]
+                self._target_offset_x = offset[0]
+                self._target_offset_y = offset[1]
+
+        # --- PHASE 2: Offset interpolation ---
+        anim = self._animations.get(self._current_animation) if self._current_animation else None
+        offset_speed = anim.offset_speed if anim else 0.0
+
+        if offset_speed <= 0:
+            # Instant offset
+            self._current_offset_x = self._target_offset_x
+            self._current_offset_y = self._target_offset_y
+        else:
+            # Smooth interpolation toward target offset
+            dx = self._target_offset_x - self._current_offset_x
+            dy = self._target_offset_y - self._current_offset_y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance > 0.5:  # Small threshold
+                move_dist = min(offset_speed * dt, distance)
+                self._current_offset_x += (dx / distance) * move_dist
+                self._current_offset_y += (dy / distance) * move_dist
+            else:
+                self._current_offset_x = self._target_offset_x
+                self._current_offset_y = self._target_offset_y
+
+        # --- PHASE 3: Movement interpolation (existing logic) ---
         target_px = self.x * cell_width
         target_py = self.y * cell_height
 
@@ -389,31 +669,30 @@ class Sprite:
             # Instant movement
             self._visual_x = float(target_px)
             self._visual_y = float(target_py)
-            return
-
-        dx = target_px - self._visual_x
-        dy = target_py - self._visual_y
-        distance = math.sqrt(dx * dx + dy * dy)
-
-        if distance > 0.5:  # Small threshold to avoid jitter
-            speed_px = self._move_speed * cell_width  # cells/sec -> pixels/sec
-            move_dist = min(speed_px * dt, distance)
-            self._visual_x += (dx / distance) * move_dist
-            self._visual_y += (dy / distance) * move_dist
         else:
-            self._visual_x = float(target_px)
-            self._visual_y = float(target_py)
+            dx = target_px - self._visual_x
+            dy = target_py - self._visual_y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance > 0.5:  # Small threshold to avoid jitter
+                speed_px = self._move_speed * cell_width  # cells/sec -> pixels/sec
+                move_dist = min(speed_px * dt, distance)
+                self._visual_x += (dx / distance) * move_dist
+                self._visual_y += (dy / distance) * move_dist
+            else:
+                self._visual_x = float(target_px)
+                self._visual_y = float(target_py)
 
     def draw(self, window: "Window") -> None:
-        """Draw the sprite to a window at its visual position."""
+        """Draw the sprite to a window at its visual position plus animation offset."""
         if not self.frames:
             return
 
         frame = self.frames[self.current_frame]
 
-        # Calculate pixel position (visual, not logical)
-        base_px = self._visual_x - self.origin[0] * window._cell_width
-        base_py = self._visual_y - self.origin[1] * window._cell_height
+        # Calculate pixel position: visual position + animation offset - origin
+        base_px = (self._visual_x + self._current_offset_x) - self.origin[0] * window._cell_width
+        base_py = (self._visual_y + self._current_offset_y) - self.origin[1] * window._cell_height
 
         for row_idx, row in enumerate(frame.chars):
             for col_idx, char in enumerate(row):
@@ -727,6 +1006,45 @@ def create_effect(
     return effect
 
 
+def create_animation(
+    name: str,
+    frame_indices: List[int],
+    frame_duration: float = 0.1,
+    offsets: Optional[List[Tuple[float, float]]] = None,
+    loop: bool = True,
+    offset_speed: float = 0.0,
+) -> Animation:
+    """
+    Create an Animation object.
+
+    Args:
+        name: Unique identifier for this animation
+        frame_indices: List of frame indices into sprite.frames
+        frame_duration: Seconds per frame
+        offsets: Per-frame pixel offsets as (x, y) tuples.
+                 Positive x = right, positive y = down.
+        loop: If True, animation loops; if False, plays once
+        offset_speed: Pixels per second for offset interpolation (0 = instant)
+
+    Returns:
+        Animation object ready to add to a sprite
+
+    Example:
+        # Walking animation with bobbing offset
+        walk = pyunicodegame.create_animation(
+            "walk",
+            frame_indices=[0, 1, 2, 1],
+            frame_duration=0.12,
+            offsets=[(0, 0), (0, -3), (0, 0), (0, -3)],
+            loop=True,
+            offset_speed=100.0
+        )
+        player.add_animation(walk)
+        player.play_animation("walk")
+    """
+    return Animation(name, frame_indices, frame_duration, offsets, loop, offset_speed)
+
+
 def init(
     title: str,
     width: int = 80,
@@ -860,29 +1178,34 @@ def run(
     Handles events, calls update/render callbacks, and manages timing.
     Loop exits on window close, Escape key, or when quit() is called.
 
+    Sprites are automatically updated and drawn each frame - no manual
+    calls needed. If you only use sprites, you may not need render at all.
+
     Built-in controls:
         - Escape: Exit the game
         - Alt+Enter (Option+Enter on Mac): Toggle fullscreen (aspect-ratio preserved)
 
     Args:
-        update: Called each frame with dt (seconds since last frame)
-        render: Called each frame to draw
+        update: Called each frame with dt (seconds since last frame). Use for
+                game logic like checking animation state or updating positions.
+        render: Optional. Called each frame for additional drawing beyond sprites
+                (e.g., UI text, ground tiles). Sprites are drawn after this.
         on_key: Called when a key is pressed, with the pygame key code
 
     Example:
-        def update(dt):
-            player.move(dt)
+        # Minimal example - sprites only, no callbacks needed
+        pyunicodegame.run()
 
-        def render():
-            win = pyunicodegame.get_window("main")
-            win.clear()
-            win.put(10, 5, "@", (0, 255, 0))
+        # With game logic
+        def update(dt):
+            if player.is_animation_finished():
+                player.play_animation("idle")
 
         def on_key(key):
             if key == pygame.K_SPACE:
-                player.jump()
+                player.play_animation("jump")
 
-        pyunicodegame.run(update=update, render=render, on_key=on_key)
+        pyunicodegame.run(update=update, on_key=on_key)
     """
     global _running, _fullscreen
 
@@ -905,6 +1228,10 @@ def run(
         if update:
             update(dt)
 
+        # Update all sprites in all windows
+        for window in _windows.values():
+            window.update_sprites(dt)
+
         # Clear all windows to their background color
         for window in _windows.values():
             window.surface.fill(window._bg)
@@ -912,6 +1239,10 @@ def run(
         # Call render callback (client draws to windows)
         if render:
             render()
+
+        # Draw all sprites in all windows
+        for window in _windows.values():
+            window.draw_sprites()
 
         # Composite all windows in z-order to render surface
         _render_surface.fill((0, 0, 0))
