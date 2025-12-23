@@ -6,6 +6,7 @@ Arrow keys to move camera, P to toggle perspective/orthographic mode.
 Shows multiple windows at different depths creating a parallax effect.
 """
 
+import random
 import pygame
 import pyunicodegame
 
@@ -13,155 +14,199 @@ import pyunicodegame
 def main():
     root = pyunicodegame.init("Camera Demo", width=80, height=25, bg=(10, 10, 30, 255))
 
-    # Scene is 3x wider than viewport for scrolling
     scene_width = 240
+    ground_y = 22
 
-    # Create layers at different depths
-    # Background - far away, moves slowest
-    bg = pyunicodegame.create_window("bg", 0, 0, scene_width, 25, z_index=0, bg=(5, 5, 20, 255))
-    bg.depth = 2.0
+    # --- Create layers ---
 
-    # Midground - moderate depth
-    mid = pyunicodegame.create_window("mid", 0, 0, scene_width, 25, z_index=5, bg=(0, 0, 0, 0))
-    mid.depth = 1.0
+    # Stars (fixed, doesn't scroll)
+    stars_layer = pyunicodegame.create_window(
+        "stars", 0, 0, scene_width, 50, z_index=0,
+        bg=(5, 5, 20, 255), scale=0.6
+    )
+    stars_layer.fixed = True
 
-    # Foreground - at camera plane, moves 1:1
-    fg = pyunicodegame.create_window("fg", 0, 0, scene_width, 25, z_index=10, bg=(0, 0, 0, 0))
+    # Mountains (far background, slow parallax)
+    mountains_layer = pyunicodegame.create_window(
+        "mountains", 0, 0, scene_width, 25, z_index=1, bg=(0, 0, 0, 0)
+    )
+    mountains_layer.depth = 4.0
+
+    # Trees (midground, moderate parallax)
+    trees_layer = pyunicodegame.create_window(
+        "trees", 0, 0, scene_width, 25, z_index=5, bg=(0, 0, 0, 0)
+    )
+    trees_layer.depth = 1.0
+
+    # Foreground (moves 1:1 with camera)
+    fg = pyunicodegame.create_window(
+        "fg", 0, 0, scene_width, 25, z_index=10, bg=(0, 0, 0, 0)
+    )
     fg.depth = 0.0
 
-    # UI - fixed, doesn't move with camera (same size as viewport)
-    ui = pyunicodegame.create_window("ui", 0, 0, 80, 25, z_index=100, bg=(0, 0, 0, 0))
+    # UI (fixed overlay)
+    ui = pyunicodegame.create_window(
+        "ui", 0, 0, 80, 25, z_index=100, bg=(0, 0, 0, 0)
+    )
     ui.fixed = True
 
-    # Enable perspective mode and start camera in the middle of the scene
-    # Scene is 240 cells, viewport is 80, so center camera at (240-80)/2 = 80 cells
-    # At 10 pixels per cell, that's 800 pixels
+    # --- Stars (twinkling animation) ---
+
+    for _ in range(150):
+        sx = random.randint(0, scene_width - 1)
+        sy = random.randint(0, 49)
+        b = 120 + random.randint(0, 60)  # base brightness
+
+        star = pyunicodegame.create_sprite("✦", fg=(b, b, b + 40))
+        star.add_frame("✧", fg=(b - 30, b - 30, b + 20))
+        star.add_frame("·", fg=(b - 60, b - 60, b))
+        star.add_frame("✧", fg=(b - 30, b - 30, b + 20))
+
+        speed = 0.3 + random.random() * 0.5
+        twinkle = pyunicodegame.create_animation(
+            "twinkle", frame_indices=[0, 1, 2, 1, 0, 0, 0], frame_duration=speed
+        )
+        star.add_animation(twinkle)
+        star.play_animation("twinkle")
+        star.move_to(sx, sy)
+        stars_layer.add_sprite(star)
+
+    # --- Mountains ---
+
+    def create_mountain(window, center_x, peak_y, color):
+        """Create a mountain as a single multi-line sprite using ◢◣█ characters."""
+        height = ground_y - peak_y
+        max_width = 2 + (height - 1) * 2
+
+        rows = []
+        for i in range(height):
+            width = 2 + i * 2
+            padding = (max_width - width) // 2
+            if width == 2:
+                line = " " * padding + "◢◣" + " " * padding
+            else:
+                line = " " * padding + "◢" + "█" * (width - 2) + "◣" + " " * padding
+            rows.append(line)
+
+        mountain = pyunicodegame.create_sprite("\n".join(rows), fg=color)
+        mountain.move_to(center_x - (max_width // 2 - 1), peak_y)
+        window.add_sprite(mountain)
+
+    for cx, py, color in [
+        (15, 14, (45, 60, 50)), (45, 12, (38, 52, 42)), (80, 15, (42, 58, 48)),
+        (110, 11, (35, 48, 38)), (140, 13, (40, 55, 45)), (175, 12, (38, 52, 42)),
+        (210, 14, (45, 60, 50)), (235, 13, (35, 50, 40)),
+    ]:
+        create_mountain(mountains_layer, cx, py, color)
+
+    # --- Trees ---
+
+    round_tree = """
+ ███
+█████
+ ███
+  █"""
+
+    pine_tree = """
+  ◢◣
+ ◢██◣
+◢████◣
+  ██"""
+
+    tree_positions = [15, 35, 55, 75, 95, 115, 135, 155, 175, 195, 215, 235]
+    for i, tx in enumerate(tree_positions):
+        if i % 2 == 0:
+            tree = pyunicodegame.create_sprite(
+                round_tree, fg=(35, 90, 35),
+                char_colors={"█": (30, 85, 30)}
+            )
+            tree.move_to(tx - 2, ground_y - 4)
+        else:
+            tree = pyunicodegame.create_sprite(
+                pine_tree, fg=(25, 75, 30),
+                char_colors={"◢": (25, 75, 30), "◣": (25, 75, 30), "█": (30, 80, 35)}
+            )
+            tree.move_to(tx - 3, ground_y - 4)
+        trees_layer.add_sprite(tree)
+
+    # --- Ground ---
+
+    for y, color in [(ground_y, (45, 70, 35)), (ground_y + 1, (70, 50, 30)), (ground_y + 2, (55, 40, 25))]:
+        ground = pyunicodegame.create_sprite("█" * scene_width, fg=color)
+        ground.move_to(0, y)
+        fg.add_sprite(ground)
+
+    # --- Houses ---
+
+    house_pattern = """
+◢█◣
+█░█"""
+
+    for hx in [25, 85, 145, 205]:
+        house = pyunicodegame.create_sprite(
+            house_pattern, fg=(160, 110, 60),
+            char_colors={"◢": (140, 80, 40), "◣": (140, 80, 40), "█": (160, 110, 60)}
+        )
+        house.move_to(hx - 1, ground_y - 2)
+        fg.add_sprite(house)
+
+    # --- Campfires ---
+
+    for cfx in [50, 120, 180]:
+        fire = pyunicodegame.create_sprite("✱", fg=(255, 180, 50))
+        fire.emissive = True
+        fire.move_to(cfx, ground_y - 1)
+        fg.add_sprite(fire)
+
+    # --- Signs ---
+
+    sign_pattern = """
+▬▬▬
+ │"""
+
+    for sx in [70, 160, 220]:
+        sign = pyunicodegame.create_sprite(
+            sign_pattern, fg=(100, 75, 40),
+            char_colors={"▬": (120, 90, 50), "│": (100, 75, 40)}
+        )
+        sign.move_to(sx - 1, ground_y - 2)
+        fg.add_sprite(sign)
+
+    # --- Player ---
+
+    player = pyunicodegame.create_sprite("@", fg=(255, 255, 100))
+    player.move_to(100, ground_y - 1)
+    fg.add_sprite(player)
+
+    # --- Camera setup ---
+
     start_x = (scene_width - 80) // 2 * 10
     pyunicodegame.set_camera(x=start_x, y=0, mode="perspective", depth_scale=0.1)
-
-    # Camera movement speed (pixels per second)
-    camera_speed = 150
+    camera_speed = 80
 
     def update(dt):
-        # Smooth camera movement with held keys
         keys = pygame.key.get_pressed()
-        dx, dy = 0, 0
-        if keys[pygame.K_LEFT]:
-            dx -= camera_speed * dt
-        if keys[pygame.K_RIGHT]:
-            dx += camera_speed * dt
-        if keys[pygame.K_UP]:
-            dy -= camera_speed * dt
-        if keys[pygame.K_DOWN]:
-            dy += camera_speed * dt
+        dx = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * camera_speed * dt
+        dy = (keys[pygame.K_DOWN] - keys[pygame.K_UP]) * camera_speed * dt
         if dx or dy:
             pyunicodegame.move_camera(dx, dy)
 
     def on_key(key):
         if key == pygame.K_p:
-            # Toggle perspective/orthographic
-            x, y, mode, depth_scale = pyunicodegame.get_camera()
-            new_mode = "orthographic" if mode == "perspective" else "perspective"
-            pyunicodegame.set_camera(mode=new_mode)
+            _, _, mode, _ = pyunicodegame.get_camera()
+            pyunicodegame.set_camera(mode="orthographic" if mode == "perspective" else "perspective")
         elif key == pygame.K_q:
             pyunicodegame.quit()
 
     def render():
-        # Get camera state for display
-        cx, cy, mode, depth_scale = pyunicodegame.get_camera()
+        cx, cy, mode, _ = pyunicodegame.get_camera()
 
-        # Background layer - distant stars (move slowest)
-        bg.surface.fill(bg._bg)
-        # Stars scattered across the wide scene
-        stars = [
-            # Original area
-            (10, 5), (25, 8), (40, 3), (55, 10), (70, 6),
-            (15, 15), (35, 18), (50, 14), (65, 20), (78, 12),
-            (5, 22), (30, 20), (45, 22), (60, 19), (75, 23),
-            # Middle section
-            (95, 5), (110, 8), (125, 4), (140, 11), (155, 7),
-            (100, 16), (118, 19), (135, 13), (150, 21), (165, 14),
-            (90, 23), (108, 18), (130, 22), (148, 17), (162, 20),
-            # Right section
-            (180, 6), (195, 9), (210, 3), (225, 12), (235, 8),
-            (185, 17), (200, 14), (215, 20), (228, 15), (238, 22),
-            (175, 21), (192, 23), (208, 18), (222, 24), (232, 19),
-        ]
-        for sx, sy in stars:
-            bg.put(sx, sy, "*", (100, 100, 150))
-
-        # Midground - mountains/hills (moderate parallax)
-        mid.surface.fill(mid._bg)
-        # Draw mountain ranges across the scene
-        def draw_mountain(base_x, peak_y, width):
-            for i in range(width):
-                offset = abs(i - width // 2)
-                y = peak_y + offset
-                mid.put(base_x + i, y, "^", (60, 80, 60))
-
-        # Mountains spread across scene
-        draw_mountain(5, 16, 5)
-        draw_mountain(20, 14, 7)
-        draw_mountain(40, 16, 5)
-        draw_mountain(55, 13, 9)
-        draw_mountain(75, 15, 5)
-        draw_mountain(95, 14, 7)
-        draw_mountain(115, 16, 5)
-        draw_mountain(135, 12, 9)
-        draw_mountain(160, 15, 5)
-        draw_mountain(180, 14, 7)
-        draw_mountain(200, 16, 5)
-        draw_mountain(220, 13, 7)
-
-        # Trees in midground
-        trees = [
-            (12, 19), (18, 20), (32, 19), (38, 20), (48, 19),
-            (52, 20), (68, 19), (72, 20), (88, 19), (102, 20),
-            (112, 19), (128, 20), (145, 19), (158, 20), (172, 19),
-            (188, 20), (205, 19), (218, 20), (232, 19),
-        ]
-        for tx, ty in trees:
-            mid.put(tx, ty - 1, "^", (40, 100, 40))
-            mid.put(tx, ty, "|", (80, 60, 40))
-
-        # Foreground - ground level (moves 1:1 with camera)
-        fg.surface.fill(fg._bg)
-        # Draw ground across entire scene
-        for x in range(scene_width):
-            fg.put(x, 22, "_", (80, 80, 60))
-            fg.put(x, 23, ".", (60, 60, 40))
-            fg.put(x, 24, ".", (50, 50, 30))
-
-        # Objects spread across the foreground
-        # Houses
-        for hx in [20, 80, 150, 210]:
-            fg.put(hx, 21, "#", (150, 100, 50))
-            fg.put(hx + 1, 21, "#", (150, 100, 50))
-
-        # Campfires
-        for cfx in [40, 120, 180]:
-            fg.put(cfx, 21, "*", (255, 200, 100))
-
-        # Signs/markers
-        for sx in [60, 100, 140, 200]:
-            fg.put(sx, 21, "|", (120, 80, 40))
-            fg.put(sx, 20, "-", (100, 70, 35))
-
-        # Player marker (center of scene)
-        fg.put(120, 21, "@", (255, 255, 100))
-
-        # UI layer - fixed, shows controls and status (all at top)
-        ui.surface.fill(ui._bg)
         ui.put_string(2, 0, "CAMERA DEMO - Parallax Scrolling", (200, 200, 255))
         ui.put_string(2, 1, "Arrow keys: Move   P: Toggle mode   Q: Quit", (150, 150, 150))
+        ui.put_string(2, 2, f"Cam: ({cx:.0f},{cy:.0f}) {mode.upper()}", (100, 100, 100))
 
-        # Status and layer info on same line
-        mode_str = mode.upper()
-        status = f"Cam: ({cx:.0f},{cy:.0f}) {mode_str}"
-        ui.put_string(2, 2, status, (100, 100, 100))
-        ui.put_string(35, 2, "BG:2.0", (80, 80, 100))
-        ui.put_string(45, 2, "MID:1.0", (60, 80, 60))
-        ui.put_string(56, 2, "FG:0.0", (100, 100, 60))
+        fps = pyunicodegame._clock.get_fps()
+        ui.put_string(80 - 8, 0, f"FPS:{fps:.0f}", (100, 100, 100))
 
     pyunicodegame.run(update=update, render=render, on_key=on_key)
 

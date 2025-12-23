@@ -720,6 +720,7 @@ class Sprite:
     def add_frame(
         self,
         pattern: str,
+        fg: Optional[Tuple[int, int, int]] = None,
         char_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
     ) -> int:
         """
@@ -728,6 +729,7 @@ class Sprite:
         Args:
             pattern: Multi-line string defining the frame shape.
                      Spaces are transparent. Leading/trailing blank lines are trimmed.
+            fg: Default foreground color for this frame (overrides sprite default)
             char_colors: Optional dict mapping characters to foreground colors
 
         Returns:
@@ -740,17 +742,17 @@ class Sprite:
                / \\
             ''', fg=(0, 255, 0))
 
-            # Add walk frames
+            # Add walk frames with different colors
             player.add_frame('''
                 O
                /|\\
                /
-            ''')
+            ''', fg=(0, 200, 0))
             player.add_frame('''
                 O
                /|\\
                  \\
-            ''')
+            ''', fg=(0, 150, 0))
         """
         # Parse pattern (same logic as create_sprite)
         lines = pattern.split('\n')
@@ -775,7 +777,7 @@ class Sprite:
             min_indent = 0
 
         chars = []
-        fg_colors = [] if char_colors else None
+        fg_colors = [] if (char_colors or fg) else None
         max_width = 0
 
         for line in lines:
@@ -788,10 +790,16 @@ class Sprite:
             chars.append(row)
             max_width = max(max_width, len(row))
 
-            if char_colors:
+            if char_colors or fg:
                 color_row = []
                 for c in row:
-                    color_row.append(char_colors.get(c))
+                    # char_colors takes priority, then fg, then None (use sprite default)
+                    if char_colors and c in char_colors:
+                        color_row.append(char_colors[c])
+                    elif fg:
+                        color_row.append(fg)
+                    else:
+                        color_row.append(None)
                 fg_colors.append(color_row)
 
         for row in chars:
