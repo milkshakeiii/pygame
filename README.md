@@ -1,6 +1,6 @@
 # pyunicodegame
 
-A pygame library for TUI-style unicode graphics with sprites, animations, particles, lighting, and a camera system.
+A pygame library for TUI-style unicode graphics with sprites, animations, particles, emitters, a bloom effect, lighting, and a camera system.
 
 ## Features
 
