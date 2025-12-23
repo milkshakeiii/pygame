@@ -28,8 +28,12 @@ PUBLIC API:
     create_effect(pattern, x, y, vx, vy, ...) - Create an effect sprite with velocity/drag/fade
     create_emitter(x, y, chars, spawn_rate, ...) - Create a particle emitter
     create_animation(name, frame_indices, ...) - Create a named animation with offsets
+    create_light(x, y, radius, color, ...) - Create a light source with shadows
     Window.set_bloom(enabled, threshold, ...) - Enable bloom post-processing on window
+    Window.add_light(light) - Add light to window (auto-enables lighting)
+    Window.set_lighting(enabled, ambient) - Configure lighting system
     Sprite.emissive / EffectSprite.emissive - Mark sprite to always glow (bypasses threshold)
+    Sprite.blocks_light / EffectSprite.blocks_light - Mark sprite to cast shadows
 """
 
 import math
@@ -48,6 +52,7 @@ __all__ = [
     "EffectSprite", "create_effect",
     "EffectSpriteEmitter", "create_emitter",
     "Animation", "create_animation",
+    "Light", "create_light",
 ]
 
 # Font configuration
@@ -164,6 +169,12 @@ class Window:
         self._bloom_blur_scale = 4
         self._bloom_intensity = 1.0
         self._emissive_surface: Optional[pygame.Surface] = None
+
+        # Lighting system
+        self._lights: List["Light"] = []
+        self._lighting_enabled = False
+        self._ambient = (30, 30, 40)
+        self._lightmap: Optional[List[List[List[int]]]] = None  # [y][x][rgb]
 
         # Load font and get dimensions
         self._font = _load_font(font_name)
@@ -381,6 +392,173 @@ class Window:
         self._bloom_blur_scale = max(1, blur_scale)
         self._bloom_intensity = max(0.0, intensity)
 
+    def add_light(self, light: "Light") -> "Light":
+        """
+        Add a light source to this window.
+
+        Adding a light automatically enables the lighting system.
+
+        Args:
+            light: The Light object to add
+
+        Returns:
+            The light for chaining
+
+        Example:
+            torch = pyunicodegame.create_light(x=10, y=10, radius=8)
+            window.add_light(torch)
+        """
+        self._lights.append(light)
+        self._lighting_enabled = True
+        return light
+
+    def remove_light(self, light: "Light") -> None:
+        """Remove a light source from this window."""
+        if light in self._lights:
+            self._lights.remove(light)
+
+    def set_lighting(
+        self,
+        enabled: bool = True,
+        ambient: Tuple[int, int, int] = (30, 30, 40),
+    ) -> None:
+        """
+        Configure the lighting system.
+
+        Args:
+            enabled: Whether lighting is active
+            ambient: RGB color for unlit areas (default dark gray)
+
+        Example:
+            window.set_lighting(ambient=(20, 20, 30))  # Darker ambient
+            window.set_lighting(enabled=False)  # Disable lighting
+        """
+        self._lighting_enabled = enabled
+        self._ambient = ambient
+
+    def _build_blocking_set(self) -> set:
+        """Build set of cells that block light from sprites."""
+        blocking = set()
+
+        for sprite in self._sprites:
+            if not getattr(sprite, 'blocks_light', False):
+                continue
+
+            # Get sprite's current cell position
+            sx, sy = int(sprite.x), int(sprite.y)
+            if not sprite.frames:
+                continue
+            frame = sprite.frames[sprite.current_frame]
+
+            # Add all non-space cells of the sprite as blockers
+            for row_idx, row in enumerate(frame.chars):
+                for col_idx, char in enumerate(row):
+                    if char != ' ':
+                        cx = sx + col_idx - sprite.origin[0]
+                        cy = sy + row_idx - sprite.origin[1]
+                        blocking.add((cx, cy))
+
+        return blocking
+
+    def _compute_lightmap(self) -> None:
+        """Compute the light map from all lights."""
+        # Initialize light map to ambient
+        self._lightmap = [
+            [[self._ambient[0], self._ambient[1], self._ambient[2]]
+             for _ in range(self.width)]
+            for _ in range(self.height)
+        ]
+
+        if not self._lights:
+            return
+
+        # Build blocking set once
+        blocking = self._build_blocking_set()
+
+        def is_blocking(x: int, y: int) -> bool:
+            return (x, y) in blocking
+
+        # Process each light
+        for light in self._lights:
+            # Update position if following a sprite
+            if light.follow_sprite:
+                light.x = light.follow_sprite.x
+                light.y = light.follow_sprite.y
+
+            origin_x, origin_y = int(light.x), int(light.y)
+
+            # Get visible cells
+            if light.casts_shadows:
+                visible = _compute_visible_cells(
+                    origin_x, origin_y, light.radius, is_blocking
+                )
+            else:
+                # No shadows - just use radius
+                visible = set()
+                r = int(light.radius) + 1
+                for dy in range(-r, r + 1):
+                    for dx in range(-r, r + 1):
+                        if dx * dx + dy * dy <= light.radius * light.radius:
+                            visible.add((origin_x + dx, origin_y + dy))
+
+            # Accumulate light for visible cells
+            for (cx, cy) in visible:
+                if 0 <= cx < self.width and 0 <= cy < self.height:
+                    # Calculate distance falloff
+                    dx = cx - light.x
+                    dy = cy - light.y
+                    distance = math.sqrt(dx * dx + dy * dy)
+
+                    if distance < light.radius:
+                        attenuation = 1.0 - (distance / light.radius) ** light.falloff
+                        brightness = attenuation * light.intensity
+
+                        # Accumulate light color
+                        self._lightmap[cy][cx][0] += int(light.color[0] * brightness)
+                        self._lightmap[cy][cx][1] += int(light.color[1] * brightness)
+                        self._lightmap[cy][cx][2] += int(light.color[2] * brightness)
+
+        # Clamp to valid range
+        for y in range(self.height):
+            for x in range(self.width):
+                for c in range(3):
+                    self._lightmap[y][x][c] = min(255, self._lightmap[y][x][c])
+
+    def _apply_lighting(self) -> None:
+        """Apply the light map to the window surface."""
+        if self._lightmap is None:
+            return
+
+        # Use surfarray for efficient pixel access
+        try:
+            pixels = pygame.surfarray.pixels3d(self.surface)
+        except pygame.error:
+            return  # Surface doesn't support pixel access
+
+        # Apply light map cell by cell
+        for y in range(self.height):
+            for x in range(self.width):
+                light = self._lightmap[y][x]
+
+                # Get pixel region for this cell
+                px1 = x * self._cell_width
+                px2 = px1 + self._cell_width
+                py1 = y * self._cell_height
+                py2 = py1 + self._cell_height
+
+                # Clamp to surface bounds
+                px2 = min(px2, pixels.shape[0])
+                py2 = min(py2, pixels.shape[1])
+
+                # Multiply RGB by light color (normalized)
+                for c in range(3):
+                    factor = light[c] / 255.0
+                    pixels[px1:px2, py1:py2, c] = (
+                        pixels[px1:px2, py1:py2, c] * factor
+                    ).astype('uint8')
+
+        del pixels  # Unlock surface
+
 
 class SpriteFrame:
     """
@@ -511,6 +689,9 @@ class Sprite:
 
         # Bloom: if True, always contributes to bloom (bypasses threshold)
         self.emissive = False
+
+        # Lighting: if True, this sprite blocks light (casts shadows)
+        self.blocks_light = False
 
     def move_to(self, x: int, y: int) -> None:
         """
@@ -861,6 +1042,9 @@ class EffectSprite:
         # Bloom: if True, always contributes to bloom (bypasses threshold)
         self.emissive = False
 
+        # Lighting: if True, this sprite blocks light (casts shadows)
+        self.blocks_light = False
+
     def update(self, dt: float, cell_width: int, cell_height: int) -> None:
         """Update position, velocity, fade, and duration."""
         if not self.alive:
@@ -1108,6 +1292,166 @@ class EffectSpriteEmitter:
         """Move the emitter to a new position."""
         self.x = x
         self.y = y
+
+
+class Light:
+    """
+    A point light source with color, radius, and optional shadow casting.
+
+    Lights illuminate cells within their radius, with brightness falling off
+    based on distance. When shadow casting is enabled, sprites marked with
+    blocks_light=True will cast shadows.
+
+    Attributes:
+        x, y: Position in cell coordinates
+        radius: Maximum light radius in cells
+        color: RGB light color (tints illuminated cells)
+        intensity: Brightness multiplier (0.0 to 1.0+)
+        falloff: Distance falloff exponent (1=linear, 2=quadratic)
+        casts_shadows: Whether blockers cast shadows from this light
+        follow_sprite: If set, light position follows sprite's position
+    """
+
+    def __init__(
+        self,
+        x: float,
+        y: float,
+        radius: float = 10.0,
+        color: Tuple[int, int, int] = (255, 255, 255),
+        intensity: float = 1.0,
+        falloff: float = 1.0,
+        casts_shadows: bool = True,
+        follow_sprite: Optional["Sprite"] = None,
+    ):
+        """
+        Create a light source.
+
+        Args:
+            x, y: Position in cell coordinates
+            radius: Maximum light radius in cells
+            color: RGB light color (tints illuminated cells)
+            intensity: Brightness multiplier
+            falloff: Distance falloff exponent (1=linear, 2=quadratic)
+            casts_shadows: Whether blockers cast shadows from this light
+            follow_sprite: If set, light position follows sprite's position
+        """
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.color = color
+        self.intensity = intensity
+        self.falloff = falloff
+        self.casts_shadows = casts_shadows
+        self.follow_sprite = follow_sprite
+
+    def move_to(self, x: float, y: float) -> None:
+        """Move the light to a new position."""
+        self.x = x
+        self.y = y
+
+
+def _compute_visible_cells(
+    origin_x: int,
+    origin_y: int,
+    radius: float,
+    is_blocking: Callable[[int, int], bool],
+) -> set:
+    """
+    Compute visible cells from origin using symmetric shadowcasting.
+
+    Args:
+        origin_x, origin_y: Light source position
+        radius: Maximum visibility radius
+        is_blocking: Function that returns True if cell blocks light
+
+    Returns:
+        Set of (x, y) tuples for visible cells
+    """
+    visible = {(origin_x, origin_y)}
+
+    # Process each octant
+    for octant in range(8):
+        _scan_octant(
+            origin_x, origin_y, radius, octant, 1,
+            1.0, 0.0,  # start_slope, end_slope
+            is_blocking, visible
+        )
+
+    return visible
+
+
+def _scan_octant(
+    ox: int, oy: int, radius: float, octant: int, row: int,
+    start_slope: float, end_slope: float,
+    is_blocking: Callable[[int, int], bool],
+    visible: set,
+) -> None:
+    """Scan one octant for visible cells using recursive shadowcasting."""
+    if start_slope < end_slope:
+        return
+
+    next_start_slope = start_slope
+
+    for j in range(row, int(radius) + 1):
+        blocked = False
+
+        for dx in range(-j, 1):
+            # Map dx, j to actual coordinates based on octant
+            dy = -j
+            nx, ny = _transform_octant(ox, oy, dx, dy, octant)
+
+            # Calculate slopes for this cell
+            left_slope = (dx - 0.5) / (dy + 0.5)
+            right_slope = (dx + 0.5) / (dy - 0.5)
+
+            if start_slope < right_slope:
+                continue
+            if end_slope > left_slope:
+                break
+
+            # Check if cell is within radius
+            dist_sq = dx * dx + j * j
+            if dist_sq <= radius * radius:
+                visible.add((nx, ny))
+
+            # Handle blocking
+            if blocked:
+                if is_blocking(nx, ny):
+                    next_start_slope = right_slope
+                else:
+                    blocked = False
+                    start_slope = next_start_slope
+            elif is_blocking(nx, ny) and j < radius:
+                blocked = True
+                _scan_octant(
+                    ox, oy, radius, octant, j + 1,
+                    start_slope, left_slope,
+                    is_blocking, visible
+                )
+                next_start_slope = right_slope
+
+        if blocked:
+            break
+
+
+def _transform_octant(ox: int, oy: int, dx: int, dy: int, octant: int) -> Tuple[int, int]:
+    """Transform local octant coordinates to world coordinates."""
+    if octant == 0:
+        return ox + dx, oy + dy
+    elif octant == 1:
+        return ox + dy, oy + dx
+    elif octant == 2:
+        return ox + dy, oy - dx
+    elif octant == 3:
+        return ox + dx, oy - dy
+    elif octant == 4:
+        return ox - dx, oy - dy
+    elif octant == 5:
+        return ox - dy, oy - dx
+    elif octant == 6:
+        return ox - dy, oy + dx
+    else:  # octant == 7
+        return ox - dx, oy + dy
 
 
 def _apply_bloom(
@@ -1469,6 +1813,53 @@ def create_emitter(
     )
 
 
+def create_light(
+    x: float,
+    y: float,
+    radius: float = 10.0,
+    color: Tuple[int, int, int] = (255, 255, 255),
+    intensity: float = 1.0,
+    falloff: float = 1.0,
+    casts_shadows: bool = True,
+    follow_sprite: Optional["Sprite"] = None,
+) -> Light:
+    """
+    Create a light source.
+
+    Adding a light to a window automatically enables the lighting system.
+    Lights illuminate cells within their radius, with brightness falling off
+    based on distance.
+
+    Args:
+        x, y: Position in cell coordinates
+        radius: Maximum light radius in cells
+        color: RGB light color (tints illuminated cells)
+        intensity: Brightness multiplier
+        falloff: Distance falloff exponent (1=linear, 2=quadratic)
+        casts_shadows: Whether sprites with blocks_light=True cast shadows
+        follow_sprite: If set, light position follows sprite's position
+
+    Returns:
+        Light ready to add to a window
+
+    Example:
+        # Player torch that follows the player
+        torch = pyunicodegame.create_light(
+            x=10, y=10, radius=12,
+            color=(255, 200, 100),  # Warm orange
+            follow_sprite=player,
+        )
+        window.add_light(torch)
+    """
+    return Light(
+        x=x, y=y,
+        radius=radius, color=color,
+        intensity=intensity, falloff=falloff,
+        casts_shadows=casts_shadows,
+        follow_sprite=follow_sprite,
+    )
+
+
 def init(
     title: str,
     width: int = 80,
@@ -1667,6 +2058,12 @@ def run(
         # Draw all sprites in all windows
         for window in _windows.values():
             window.draw_sprites()
+
+        # Apply lighting to windows that have it enabled
+        for window in _windows.values():
+            if window._lighting_enabled and window.visible:
+                window._compute_lightmap()
+                window._apply_lighting()
 
         # Apply bloom post-processing to windows that have it enabled
         for window in _windows.values():
