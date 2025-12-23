@@ -5,7 +5,7 @@ A pygame library for TUI-style unicode graphics with sprites, animations, partic
 ## Features
 
 ### Sprite Animation
-Multi-frame sprites with walk cycles, jump arcs, and smooth offset transitions.
+Multi-frame sprites with smooth visual offsets (cell position unaffected).
 
 ![Animation Demo](assets/animation.gif)
 
@@ -34,7 +34,7 @@ player.play_animation("jump")
 ```
 
 ### Particle Emitters
-Configurable particle systems for fire, smoke, sparks, magic, rain, and explosions.
+Configurable particle systems with fading cell-locked or not, emission arcs, unicode characters, colors.
 
 ![Emitters Demo](assets/emitters.gif)
 
@@ -70,7 +70,7 @@ wall = pyunicodegame.create_sprite("#", fg=(100, 100, 100), blocks_light=True)
 ```
 
 ### Parallax Camera
-Multi-layer scrolling with depth-based parallax effects.
+Multi-layer scrolling with depth-based parallax effects in perspective mode. Orthographic mode for plain scrollable windows.
 
 ![Camera Demo](assets/camera.gif)
 
