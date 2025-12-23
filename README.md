@@ -69,6 +69,22 @@ window.add_light(torch)
 wall = pyunicodegame.create_sprite("#", fg=(100, 100, 100), blocks_light=True)
 ```
 
+### Bloom Post-Processing
+Glow effect for bright pixels, with emissive sprites that bypass the threshold.
+
+![Bloom Demo](assets/bloom.gif)
+
+```python
+window.set_bloom(enabled=True, threshold=180, blur_scale=4, intensity=1.0)
+
+# Bright sprites glow naturally
+star = pyunicodegame.create_sprite("*", fg=(255, 255, 200))
+
+# Dim sprites can be marked emissive to glow anyway
+orb = pyunicodegame.create_sprite("O", fg=(100, 100, 200))
+orb.emissive = True
+```
+
 ### Parallax Camera
 Multi-layer scrolling with depth-based parallax effects in perspective mode. Orthographic mode for plain scrollable windows.
 
