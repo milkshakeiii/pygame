@@ -194,68 +194,124 @@ def main():
             root.put(x + 3, 24, "=", (100, 100, 100))
             root.put(x + 4, 24, chr(0x2588), (255, 200, 100))
 
-        # Demo: Diagonal line going down-left
-        root.put_string(50, 14, "Diagonal (down-left):", (150, 150, 150))
-        dx2, dy2 = 62, 16
-        color3 = (150, 200, 100)
-        for i in range(6):
-            x_off = i // 2 + (i % 2)
-            if i % 2 == 0:
-                root.put(dx2 - x_off - 1, dy2 + i, chr(0x1FB3C + 41), color3)  # 🭥
-                root.put(dx2 - x_off, dy2 + i, chr(0x1FB3C + 15), color3)      # 🭏
-            else:
-                root.put(dx2 - x_off - 1, dy2 + i, chr(0x1FB3C + 31), color3)  # 🭛
-                root.put(dx2 - x_off, dy2 + i, chr(0x1FB3C + 9), color3)       # 🭉
-
-        # Demo: Small circle (3 cells wide)
+        # Demo: Circle with gradual slopes
+        # Structure (7 wide x 4 tall):
+        #     🭊🭂█🭍🬿       <- top edge (base wedges)
+        #    🭋█████🭀      <- middle + side bulge
+        #    🭦█████🭛      <- middle + side bulge
+        #     🭥🭓█🭞🭚       <- bottom edge (inverted wedges)
+        #
+        # Key principles:
+        # 1. Fill levels create curves using 1/3 and 2/3 edge points
+        #    Top/bottom rows: 0 -> 2/3 -> 1 -> 2/3 -> 0 (curves toward center)
+        # 2. Base wedges for top edge (empty space at top of cell)
+        #    Inverted wedges for bottom edge (empty space at bottom)
+        # 3. Horizontal symmetry - mirror wedges across center
+        # 4. Side bulges: base wedge on top, its inverse below (same diagonal)
+        #    Left: 🭋(15)/🭦(42) fill RIGHT side; Right: 🭀(4)/🭛(31) fill LEFT side
         root.put_string(2, 26, "Circle:", (150, 150, 150))
         cx, cy = 4, 28
         color4 = (200, 100, 200)
-        # Top row: TL corner, full, TR corner
-        root.put(cx, cy, chr(0x1FB3C + 5), color4)      # TL
-        root.put(cx + 1, cy, chr(0x2588), color4)       # full
-        root.put(cx + 2, cy, chr(0x1FB3C + 16), color4) # TR
-        # Middle row: full blocks
-        root.put(cx, cy + 1, chr(0x2588), color4)
-        root.put(cx + 1, cy + 1, chr(0x2588), color4)
-        root.put(cx + 2, cy + 1, chr(0x2588), color4)
-        # Bottom row: BL corner, full, BR corner
-        root.put(cx, cy + 2, chr(0x1FB3C + 22), color4)  # BL (inverted)
-        root.put(cx + 1, cy + 2, chr(0x2588), color4)    # full
-        root.put(cx + 2, cy + 2, chr(0x1FB3C + 33), color4)  # BR (inverted)
+        # Top row: 0→⅔→1→⅔→0 using 🭊🭂█🭍🬿 (indices 14,6,full,17,3)
+        root.put(cx, cy, chr(0x1FB3C + 14), color4)      # 🭊
+        root.put(cx + 1, cy, chr(0x1FB3C + 6), color4)   # 🭂
+        root.put(cx + 2, cy, chr(0x2588), color4)        # █
+        root.put(cx + 3, cy, chr(0x1FB3C + 17), color4)  # 🭍
+        root.put(cx + 4, cy, chr(0x1FB3C + 3), color4)   # 🬿
+        # Middle rows: full blocks with side wedges for roundness
+        for row in range(1, 3):
+            for col in range(5):
+                root.put(cx + col, cy + row, chr(0x2588), color4)
+        # Left side: 🭋(15) top, 🭦(42) bottom
+        root.put(cx - 1, cy + 1, chr(0x1FB3C + 15), color4)  # 🭋
+        root.put(cx - 1, cy + 2, chr(0x1FB3C + 42), color4)  # 🭦
+        # Right side: 🭀(4) top, 🭛(31) bottom
+        root.put(cx + 5, cy + 1, chr(0x1FB3C + 4), color4)   # 🭀
+        root.put(cx + 5, cy + 2, chr(0x1FB3C + 31), color4)  # 🭛
+        # Bottom row: 🭥🭓█🭞🭚 (indices 41,23,full,34,30)
+        root.put(cx, cy + 3, chr(0x1FB3C + 41), color4)      # 🭥
+        root.put(cx + 1, cy + 3, chr(0x1FB3C + 23), color4)  # 🭓
+        root.put(cx + 2, cy + 3, chr(0x2588), color4)        # █
+        root.put(cx + 3, cy + 3, chr(0x1FB3C + 34), color4)  # 🭞
+        root.put(cx + 4, cy + 3, chr(0x1FB3C + 30), color4)  # 🭚
 
         # Demo: Triangle pointing right
+        # Pattern uses alternating diagonal pairs:
+        #   🭋(15)/🭀(4) for top of diagonal edges
+        #   🭅(9)/🭐(20) for bottom of diagonal edges
+        # Structure (grows wider going down):
+        #     🭋🭀
+        #     🭅🭐
+        #    🭋██🭀
+        #    🭅██🭐
+        #   🭋████🭀
         root.put_string(12, 26, "Triangle:", (150, 150, 150))
         tx, ty = 14, 28
         color5 = (100, 200, 200)
-        root.put(tx, ty, chr(0x1FB3C + 15), color5)      # 🭏 top
-        root.put(tx, ty + 1, chr(0x2588), color5)        # full middle
-        root.put(tx + 1, ty + 1, chr(0x1FB3C + 20), color5)  # 🭐 point
-        root.put(tx, ty + 2, chr(0x1FB3C + 9), color5)   # 🭉 bottom
+        # Row 0-1: tip (2 wide)
+        root.put(tx + 2, ty, chr(0x1FB3C + 15), color5)      # 🭋
+        root.put(tx + 3, ty, chr(0x1FB3C + 4), color5)       # 🭀
+        root.put(tx + 2, ty + 1, chr(0x1FB3C + 9), color5)   # 🭅
+        root.put(tx + 3, ty + 1, chr(0x1FB3C + 20), color5)  # 🭐
+        # Row 2-3: middle (4 wide)
+        root.put(tx + 1, ty + 2, chr(0x1FB3C + 15), color5)  # 🭋
+        root.put(tx + 2, ty + 2, chr(0x2588), color5)        # █
+        root.put(tx + 3, ty + 2, chr(0x2588), color5)        # █
+        root.put(tx + 4, ty + 2, chr(0x1FB3C + 4), color5)   # 🭀
+        root.put(tx + 1, ty + 3, chr(0x1FB3C + 9), color5)   # 🭅
+        root.put(tx + 2, ty + 3, chr(0x2588), color5)        # █
+        root.put(tx + 3, ty + 3, chr(0x2588), color5)        # █
+        root.put(tx + 4, ty + 3, chr(0x1FB3C + 20), color5)  # 🭐
+        # Row 4: base (6 wide)
+        root.put(tx, ty + 4, chr(0x1FB3C + 15), color5)      # 🭋
+        for i in range(4):
+            root.put(tx + 1 + i, ty + 4, chr(0x2588), color5)  # ████
+        root.put(tx + 5, ty + 4, chr(0x1FB3C + 4), color5)   # 🭀
 
         # Demo: Arrow pointing right
+        # Uses half blocks for thin shaft, wedges for arrowhead:
+        #   ▄▄🭏🬼   <- lower half (U+2584) + wedges 19, 0
+        #   ▀▀🭠🭗   <- upper half (U+2580) + wedges 36, 27
         root.put_string(24, 26, "Arrow:", (150, 150, 150))
         ax, ay = 26, 28
         color6 = (255, 200, 100)
-        # Shaft
-        root.put(ax, ay + 1, chr(0x2588), color6)
-        root.put(ax + 1, ay + 1, chr(0x2588), color6)
-        # Arrowhead
-        root.put(ax + 2, ay, chr(0x1FB3C + 15), color6)      # top of head
-        root.put(ax + 2, ay + 1, chr(0x2588), color6)
-        root.put(ax + 3, ay + 1, chr(0x1FB3C + 20), color6)  # point
-        root.put(ax + 2, ay + 2, chr(0x1FB3C + 9), color6)   # bottom of head
+        # Top row: lower half shaft + arrowhead
+        root.put(ax, ay, chr(0x2584), color6)            # ▄
+        root.put(ax + 1, ay, chr(0x2584), color6)        # ▄
+        root.put(ax + 2, ay, chr(0x1FB3C + 19), color6)  # 🭏
+        root.put(ax + 3, ay, chr(0x1FB3C + 0), color6)   # 🬼
+        # Bottom row: upper half shaft + arrowhead
+        root.put(ax, ay + 1, chr(0x2580), color6)        # ▀
+        root.put(ax + 1, ay + 1, chr(0x2580), color6)    # ▀
+        root.put(ax + 2, ay + 1, chr(0x1FB3C + 36), color6)  # 🭠
+        root.put(ax + 3, ay + 1, chr(0x1FB3C + 27), color6)  # 🭗
 
-        # Demo: Speech bubble tail
-        root.put_string(36, 26, "Speech tail:", (150, 150, 150))
+        # Demo: Speech bubble with tail
+        # Structure:
+        #   🭁███████🭌   <- corners: 🭁(5), 🭌(16)
+        #   █ Hello! █   <- content
+        #   🭒███████🭝   <- corners: 🭒(22), 🭝(33)
+        #    🭡           <- tail: 🭡(37)
+        #    🭗           <- tail: 🭗(27)
+        root.put_string(36, 26, "Speech bubble:", (150, 150, 150))
         sx, sy = 38, 28
         color7 = (200, 200, 200)
-        root.put(sx, sy, chr(0x2588), color7)
-        root.put(sx + 1, sy, chr(0x2588), color7)
-        root.put(sx + 2, sy, chr(0x2588), color7)
+        # Top row
+        root.put(sx, sy, chr(0x1FB3C + 5), color7)  # 🭁
+        for i in range(1, 8):
+            root.put(sx + i, sy, chr(0x2588), color7)
+        root.put(sx + 8, sy, chr(0x1FB3C + 16), color7)  # 🭌
+        # Middle row with text
         root.put(sx, sy + 1, chr(0x2588), color7)
-        root.put(sx + 1, sy + 1, chr(0x1FB3C + 22), color7)  # BL corner starts tail
-        root.put(sx + 1, sy + 2, chr(0x1FB3C + 4), color7)   # tail point
+        root.put_string(sx + 2, sy + 1, "Hello!", color7)
+        root.put(sx + 8, sy + 1, chr(0x2588), color7)
+        # Bottom row
+        root.put(sx, sy + 2, chr(0x1FB3C + 22), color7)  # 🭒
+        for i in range(1, 8):
+            root.put(sx + i, sy + 2, chr(0x2588), color7)
+        root.put(sx + 8, sy + 2, chr(0x1FB3C + 33), color7)  # 🭝
+        # Tail
+        root.put(sx + 1, sy + 3, chr(0x1FB3C + 29), color7)  # 🭙
 
         root.put_string(2, 38, "Press Q to quit", (80, 80, 80))
 
